@@ -1350,19 +1350,37 @@ def on_close(ws, code, msg):
 
 def run_websocket():
     global current_ws
-    current_ws = WebSocketApp(
-        "wss://gateway.discord.gg/?v=9&encoding=json",
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
+    max_retries = 5
+    base_delay = 5  # Initial delay in seconds
 
-    def run_ws():
-        current_ws.run_forever(ping_interval=20, ping_timeout=10)
+    for attempt in range(max_retries):
+        try:
+            current_ws = WebSocketApp(
+                "wss://gateway.discord.gg/?v=9&encoding=json",
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
 
-    Thread(target=run_ws, daemon=True).start()
-    return current_ws
+            def run_ws():
+                current_ws.run_forever(ping_interval=20, ping_timeout=10)
+
+            Thread(target=run_ws, daemon=True).start()
+            print(f"🌐 WebSocket attempt {attempt + 1}/{max_retries} started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
+
+            # Wait for connection to stabilize
+            time.sleep(base_delay * (attempt + 1))  # Exponential backoff
+            if current_ws.sock and current_ws.sock.connected:
+                print("✅ WebSocket connected successfully")
+                return current_ws
+            else:
+                print(f"❌ WebSocket attempt {attempt + 1} failed, retrying...")
+        except Exception as e:
+            print(f"❌ WebSocket setup error: {e}, retrying...")
+
+    print("❌ Max WebSocket retries reached, exiting")
+    return None
 
 # Connection monitoring
 def monitor_connection():
@@ -1370,14 +1388,14 @@ def monitor_connection():
     while True:
         try:
             now = time.time()
-            if current_ws is None or (now - last_heartbeat > 120):  # Reduced to 120 seconds for faster detection
+            if current_ws is None or (now - last_heartbeat > 60):  # Reduced to 60s for faster detection
                 print(f"🔍 Connection issue detected, restarting at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
                 current_ws = run_websocket()
                 last_heartbeat = now
-            time.sleep(15)  # Reduced to 15 seconds for more frequent checks
+            time.sleep(10)  # Check every 10 seconds
         except Exception as e:
             print(f"🔍 Monitor error at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}: {e}")
-            time.sleep(15)
+            time.sleep(10)
 
 # Command queue system
 command_queue = queue.Queue()
@@ -1431,7 +1449,7 @@ def start_adventure_farming():
 
     load_choice_memory()
 
-    keep_alive()  # Start Flask server to keep Replit awake
+    keep_alive()  # Start Flask server to keep Render awake
 
     current_ws = run_websocket()
 
@@ -1454,10 +1472,15 @@ def start_adventure_farming():
 
     while True:
         if os.path.exists(STOP_FILE):
-            print("🛑 Stop file detected at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
+            print(f"🛑 Stop file detected at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
             send_webhook("🛑 Bot stopped")
             stop_event.set()
             break
+
+        # Check if WebSocket is alive on each loop
+        if not current_ws or not current_ws.sock or not current_ws.sock.connected:
+            print(f"🔄 WebSocket lost, restarting at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
+            current_ws = run_websocket()
 
         count += 1
         print(f"\n🚀 Adventure Round #{count} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
