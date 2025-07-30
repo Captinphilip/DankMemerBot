@@ -31,7 +31,7 @@ GUILD_ID = "1398487811362918400"
 INTERACTIVE_COMMANDS = ["pls adv"]
 COMMAND_DELAY = 6     # Time between commands (seconds)
 ROUND_DELAY = 240     # 4 minutes between rounds (seconds)
-DELETE_MESSAGE_DELAY = 3  # Time to delete message after sending (seconds)
+DELETE_MESSAGE_DELAY = 10  # Time to delete message after sending (seconds), increased from 3
 STOP_FILE = "stop.txt"
 CHOICE_MEMORY_FILE = "choice_memory.pkl"  # Choice memory file
 
@@ -1031,7 +1031,7 @@ def send_message(content):
         if response.status_code == 200:
             message_data = response.json()
             message_id = message_data.get("id")
-            print(f"✔️ Sent: {content}")
+            print(f"✔️ Sent: {content} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
             send_webhook(f"🟢 Sent: `{content}` at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
 
             if message_id and DELETE_MESSAGE_DELAY > 0:
@@ -1048,18 +1048,19 @@ def send_message(content):
                 Thread(target=delete_later, daemon=True).start()
 
             if content in INTERACTIVE_COMMANDS:
-                waiting_for_interaction = True
-                waiting_for_start_button = True
-                adventure_start_time = time.time()
-                no_start_button_time = time.time()
-                print(f"🎮 Started adventure interaction mode at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
+                if remaining_cooldown <= 0:  # Only start if no cooldown
+                    waiting_for_interaction = True
+                    waiting_for_start_button = True
+                    adventure_start_time = time.time()
+                    no_start_button_time = time.time()
+                    print(f"🎮 Started adventure interaction mode at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
 
             return True
         else:
             print(f"❌ Failed to send: {response.status_code}")
 
     except Exception as e:
-        print(f"❌ Send error: {e}")
+        print(f"❌ Send error at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}: {e}")
 
     return False
 
@@ -1369,14 +1370,14 @@ def monitor_connection():
     while True:
         try:
             now = time.time()
-            if current_ws is None or (now - last_heartbeat > 300):  # Increased from 180 to 300 seconds
+            if current_ws is None or (now - last_heartbeat > 120):  # Reduced to 120 seconds for faster detection
                 print(f"🔍 Connection issue detected, restarting at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
                 current_ws = run_websocket()
                 last_heartbeat = now
-            time.sleep(30)
+            time.sleep(15)  # Reduced to 15 seconds for more frequent checks
         except Exception as e:
             print(f"🔍 Monitor error at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}: {e}")
-            time.sleep(30)
+            time.sleep(15)
 
 # Command queue system
 command_queue = queue.Queue()
@@ -1390,32 +1391,33 @@ def command_worker():
             command = command_queue.get(timeout=1)
             if command:
                 print(f"🎯 Executing: {command} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
-                success = send_message(command)
+                if remaining_cooldown <= 0:  # Check cooldown before sending
+                    success = send_message(command)
+                    if success and command in INTERACTIVE_COMMANDS:
+                        waited = 0
+                        max_wait = ADVENTURE_TIMEOUT
+                        while (waiting_for_interaction or waiting_for_navigation or waiting_for_start_button):
+                            time.sleep(5)
+                            waited += 5
 
-                if success and command in INTERACTIVE_COMMANDS:
-                    waited = 0
-                    max_wait = ADVENTURE_TIMEOUT
-                    while (waiting_for_interaction or waiting_for_navigation or waiting_for_start_button):
-                        time.sleep(5)
-                        waited += 5
+                            if waited % 60 == 0:
+                                status = "interaction" if waiting_for_interaction else ("navigation" if waiting_for_navigation else "start_button")
+                                print(f"🕐 Adventure running ({status})... {waited}/{max_wait}s")
 
-                        if waited % 60 == 0:
-                            status = "interaction" if waiting_for_interaction else ("navigation" if waiting_for_navigation else "start_button")
-                            print(f"🕐 Adventure running ({status})... {waited}/{max_wait}s")
+                            if waited >= max_wait:
+                                print(f"⏰ Interaction timeout ({max_wait}s) - Retrying pls adv at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
+                                send_webhook(f"⏰ Interaction timeout - Retrying pls adv")
+                                waiting_for_interaction = False
+                                waiting_for_navigation = False
+                                waiting_for_start_button = False
+                                adventure_start_time = None
+                                command_queue.put("pls adv")  # Infinite retry
+                                break
 
-                        if waited >= max_wait:
-                            print(f"⏰ Interaction timeout ({max_wait}s) - Retrying pls adv at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
-                            send_webhook(f"⏰ Interaction timeout - Retrying pls adv")
-                            waiting_for_interaction = False
-                            waiting_for_navigation = False
-                            waiting_for_start_button = False
-                            adventure_start_time = None
-                            command_queue.put("pls adv")  # Infinite retry
-                            break
-
-                    if not (waiting_for_interaction or waiting_for_navigation or waiting_for_start_button):
-                        print(f"✅ Adventure completed in {waited}s at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
-
+                        if not (waiting_for_interaction or waiting_for_navigation or waiting_for_start_button):
+                            print(f"✅ Adventure completed in {waited}s at {datetime.now().strftime('%Y-%m-%d %H:%M:%S CET')}")
+                else:
+                    print(f"⏰ Cooldown active ({remaining_cooldown}s), skipping command")
                 time.sleep(COMMAND_DELAY)
                 command_queue.task_done()
 
